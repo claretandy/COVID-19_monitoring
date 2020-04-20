@@ -7,22 +7,25 @@ import numpy as np
 import bokeh
 from bokeh.layouts import layout, column, gridplot
 from bokeh.plotting import figure, output_file, show
-from bokeh.models import ColumnDataSource, HoverTool, DatetimeTickFormatter
+from bokeh.models import ColumnDataSource, HoverTool, NumeralTickFormatter
 import bokeh.palettes as bpals
 from bokeh.models.widgets import CheckboxGroup
 
-def read_web_settings():
+def read_settings():
 
     f = open('web_settings')
+    ftp_loc = f.readline().rstrip('\n')
     user = f.readline().rstrip('\n')
     pw = f.readline().rstrip('\n')
+    local_dir = f.readline().rstrip('\n')
     f.close()
 
-    return user, pw
+    return ftp_loc, user, pw, local_dir
 
 def update_local_data():
+    local_dir = read_settings()[3]
     pwd = os.getcwd()
-    os.chdir('/Users/andy/Work/GitHub/COVID-19')
+    os.chdir(local_dir + 'COVID-19')
     os.system('git fetch')
     os.system('git pull origin')
     os.chdir(pwd)
@@ -35,9 +38,9 @@ def upload_to_ftp(out_html):
 
     file_path = Path(out_html)
 
-    user, pw = read_web_settings()
+    ftp_loc, user, pw, local_dir = read_settings()
 
-    with FTP('ftp.plus.net',  user, pw) as ftp, open(file_path, 'rb') as file:
+    with FTP(ftp_loc,  user, pw) as ftp, open(file_path, 'rb') as file:
         ftp.cwd('htdocs')
         ftp.storbinary(f'STOR {file_path.name}', file)
 
@@ -65,10 +68,12 @@ def getData(type, countries, threshold):
 
     update_local_data()
 
+    local_dir = read_settings()[3]
+
     if type == 'deaths':
-        ifile = "/Users/andy/Work/GitHub/COVID-19/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+        ifile = local_dir + "COVID-19/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
     elif type == 'cases':
-        ifile = "/Users/andy/Work/GitHub/COVID-19/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
+        ifile = local_dir + "COVID-19/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
 
     death_df = pd.read_csv(ifile)
     death_df = death_df.rename(columns={'Province/State': 'Province', 'Country/Region': 'Country'})
@@ -95,6 +100,10 @@ def getData(type, countries, threshold):
         subset = subset.reset_index()
 
     subset = days_since(subset.copy(), threshold)
+    subset = subset.assign(DailyChange=subset.groupby('Country')['Values'].diff())
+    subset = subset.join(subset.groupby('Date')['DailyChange'].sum(), on='Date', rsuffix='_dailyGlobalTot')
+    subset = subset.assign(CntryPercOfGlobal=100 * (subset.DailyChange / subset.DailyChange_dailyGlobalTot))
+    subset = subset.drop(columns=['DailyChange_dailyGlobalTot'])
 
     subset_reshaped = subset.pivot(index='Date', columns='Country')
     subset_reshaped.columns = subset_reshaped.columns.map('_'.join)
@@ -105,6 +114,75 @@ def getData(type, countries, threshold):
     source = ColumnDataSource(subset_reshaped)
 
     return source, subset
+
+
+def make_timeseries_plot(subset, countries, settings):
+
+    pal = settings['palette']
+
+    p = figure(x_axis_type=settings['axis_type']['x'],
+               y_axis_type=settings['axis_type']['y'],
+               x_range=settings['x_range'],
+               plot_width=700, plot_height=400,
+               tools="xpan,xwheel_zoom,reset,crosshair,save",
+               active_drag='xpan',
+               active_scroll='xwheel_zoom')
+
+    for cntry in countries:
+        i = countries.index(cntry)
+        srcdata = ColumnDataSource(subset[subset['Country'] == cntry])
+        p.line(x=settings['data']['x'], y=settings['data']['y'], line_width=2, source=srcdata, color=pal[i], legend_label=cntry, name=cntry)
+        p.circle(x=settings['data']['x'], y=settings['data']['y'], source=srcdata, color=pal[i], legend_label=cntry, name=cntry)
+
+    p.yaxis.axis_label = settings['axis_label']['y']
+    p.xaxis.axis_label = settings['axis_label']['x']
+    p.title.text = settings['title']
+    p.add_tools(
+        HoverTool(tooltips=[("Name", "$name"), settings['hover'], ("Date", "@DateString")] ))
+                          # formatters={"Date": "datetime"} )) #, mode='hline'))
+
+    if settings['legend_loc']:
+        p.legend.location = settings['legend_loc']  # "top_left"
+        p.legend.label_text_font_size = '6pt'
+        p.legend.glyph_height = 7
+        p.legend.label_height = 7
+    else:
+        p.legend.visible = False
+
+    return p
+
+def make_stacked_plot(source, countries, settings):
+
+    ########
+    # Stacked area
+    ########
+    pal = settings['palette']
+
+    s = figure(x_axis_type=settings['axis_type']['x'],
+               y_axis_type=settings['axis_type']['y'],
+               x_range=settings['x_range'],
+               plot_width=700, plot_height=400,
+               tools="xpan,xwheel_zoom,reset,crosshair,save",
+               active_drag='xpan',
+               active_scroll='xwheel_zoom')
+
+    s.varea_stack(countries, x=settings['data']['x'], color=pal, source=source)
+    s.vline_stack(countries, x=settings['data']['x'], color=pal, source=source)
+
+    s.yaxis.formatter=NumeralTickFormatter(format="‘0,0’")
+    s.yaxis.axis_label = settings['axis_label']['y']
+    s.xaxis.axis_label = settings['axis_label']['x']
+    s.title.text = settings['title']
+    s.add_tools(
+        HoverTool(tooltips=[("Name", "$name"), settings['hover']] ))
+
+    if settings['legend_loc']:
+        s.legend.location = settings['legend_loc']  # "top_left"
+        s.legend.label_text_font_size = '6pt'
+        s.legend.glyph_height = 7
+        s.legend.label_height = 7
+
+    return s
 
 def main():
     """
@@ -124,143 +202,113 @@ def main():
     output_file(out_html)
 
     # For plotting
-    start = dt.datetime(2020, 3, 8)
+    start = dt.datetime(2020, 1, 23)
     end = dt.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_last30d = end - dt.timedelta(days=30)
 
-    p = figure(x_axis_type='datetime', x_range=(start, end), plot_width=700, plot_height=400) #, tooltips=TOOLTIPS)
+    ###################
+    # Stacked area plot
+    ###################
+    stacked_plot_settings = {
+        'title': "Stacked COVID-19 daily deaths per country",
+        'data': {'x': 'Date', 'y': countries},
+        'axis_type': {'x': 'datetime', 'y': 'linear'},
+        'axis_label': {'x': 'Date', 'y': 'Daily Deaths'},
+        'x_range': (start, end),
+        'legend_loc': None,
+        'hover': ("Deaths", "$y{0,0}"),
+        'palette': pal
+    }
 
-    # Create the checkbox selection element, available carriers is a
-    # list of all airlines in the data
-    cntry_selection = CheckboxGroup(labels=countries, active=[0, 1])
+    stk = make_stacked_plot(source, countries, stacked_plot_settings)
 
-    for cntry in countries:
-        i = countries.index(cntry)
-        srcdata = ColumnDataSource(subset[subset['Country'] == cntry])
-        p.line(x='Date', y='Values', line_width=2, source=srcdata, color=pal[i], legend_label=cntry, name=cntry)
-        p.circle(x='Date', y='Values', source=srcdata, color=pal[i], legend_label=cntry, name=cntry)
-
-    p.yaxis.axis_label = 'Deaths'
-    p.xaxis.axis_label = 'Date'
-    p.legend.location = "top_left"
-    p.title.text = "COVID-19 cumulative deaths per country"
-    p.add_tools(
-        HoverTool(tooltips=[("Name", "$name"), ("Deaths", "@Values{0,0}"), ("Date", "@DateString")],
-                          formatters={"Date": "datetime"} )) #, mode='hline'))
-
-    r = figure(y_axis_type="log", plot_width=700, plot_height=400, x_range=(0,45)) #, tooltips=TOOLTIPS)
-
-    for cntry in countries:
-        i = countries.index(cntry)
-        src_cntry = ColumnDataSource(subset[subset['Country'] == cntry])
-        r.line(x='DaysSince', y="Values", line_width=2, source=src_cntry, color=pal[i], legend_label=cntry, name=cntry)
-        r.circle(x='DaysSince', y="Values", source=src_cntry, color=pal[i], legend_label=cntry, name=cntry)
-
-    # r.line(x=np.arange(45), y=10+np.exp(np.arange(45)), legend_label='y=sqrt(x)', line_color="black", line_dash="dashed")
-    r.yaxis.axis_label = 'Deaths (log scale)'
-    r.xaxis.axis_label = 'Days Since >'+str(deaths_min_threshold)+' deaths recorded'
-    # r.legend.location = "top_left"
-    r.legend.visible = False
-    r.title.text = "COVID-19 cumulative deaths per country (log scale)"
-    r.add_tools(
-        HoverTool(tooltips=[("Name", "$name"), ("Deaths", "@Values{0,0}"), ("Date", "@DateString")],
-                          formatters={"Date": "datetime"} )) #, mode='hline'))
-    # show(r)
-
-    daily_deaths = figure(x_axis_type="datetime", x_range=(start, end), plot_width=700, plot_height=400)
-
-    for cntry in countries:
-        i = countries.index(cntry)
-        df = subset[subset['Country'] == cntry]
-        df = df.assign(DailyChange=df.loc[:, "Values"].diff())
-        src_deaths_delta = ColumnDataSource(df)
-        daily_deaths.line(x='Date', y="DailyChange", line_width=2, source=src_deaths_delta, color=pal[i], legend_label=cntry, name=cntry)
-        daily_deaths.circle(x='Date', y="DailyChange", source=src_deaths_delta, color=pal[i], legend_label=cntry, name=cntry)
-
-    daily_deaths.yaxis.axis_label = 'Daily Deaths'
-    daily_deaths.xaxis.axis_label = 'Date'
-    daily_deaths.legend.location = "top_left"
-    daily_deaths.legend.label_text_font_size = '6pt'
-    daily_deaths.legend.glyph_height = 7
-    daily_deaths.legend.label_height = 7
-    daily_deaths.title.text = "COVID-19 new daily deaths per country"
-    daily_deaths.add_tools(
-        HoverTool(tooltips=[("Name", "$name"), ("Deaths", "@DailyChange{0,0}"), ("Date", "@DateString")],
-                          formatters={"Date": "datetime"} )) #, mode='hline'))
-
-    ########
-    # Stacked area
-    ########
-    # deaths_stack = figure(x_axis_type="datetime", x_range=(start, end), plot_width=700, plot_height=400)
-    #
-    # for cntry in countries:
-    #     i = countries.index(cntry)
-    #     df = subset[subset['Country'] == cntry]
-    #     df = df.assign(DailyChange=df.loc[:, "Values"].diff())
-    #     src_deaths_delta = ColumnDataSource(df)
-    #     deaths_stack.varea_stack(x='Date', stackers="DailyChange", source=src_deaths_delta, color=pal[i], legend_label=cntry, name=cntry)
-    #     # daily_deaths.circle(x='Date', y="DailyChange", source=src_deaths_delta, color=pal[i], legend_label=cntry, name=cntry)
-    #
-    # deaths_stack.yaxis.axis_label = 'Daily Deaths'
-    # deaths_stack.xaxis.axis_label = 'Date'
-    # deaths_stack.legend.location = "top_left"
-    # deaths_stack.legend.label_text_font_size = '6pt'
-    # deaths_stack.legend.glyph_height = 7
-    # deaths_stack.legend.label_height = 7
-    # deaths_stack.title.text = "COVID-19 new daily deaths per country"
-    # deaths_stack.add_tools(
-    #     HoverTool(tooltips=[("Name", "$name"), ("Deaths", "@DailyChange{0,0}"), ("Date", "@DateString")],
-    #                       formatters={"Date": "datetime"} )) #, mode='hline'))
+    cols2plot = ['CntryPercOfGlobal_' + x for x in countries]
+    stacked_plot_settings = {
+        'title': "COVID-19 daily deaths per country as a % of global total",
+        'data': {'x': 'Date', 'y': cols2plot},
+        'axis_type': {'x': 'datetime', 'y': 'linear'},
+        'axis_label': {'x': 'Date', 'y': 'Daily Deaths'},
+        'x_range': (stk.x_range), #end - dt.timedelta(days=30)
+        'legend_loc': None,
+        'hover': ("Deaths", "$y{0,0}"),
+        'palette': pal
+    }
+    stk_perc = make_stacked_plot(source, cols2plot, stacked_plot_settings)
 
     ########
     # Cases
     ########
 
-    s = figure(y_axis_type="log", plot_width=700, plot_height=400, x_range=(0,45)) #, tooltips=TOOLTIPS)
+    cumul_cases_plot_settings = {
+        'title': "COVID-19 cumulative cases per country (log scale)",
+        'data': {'x':'DaysSince', 'y':'Values'},
+        'axis_type': {'x':'linear', 'y':'log'},
+        'axis_label': {'x':'Days Since >'+str(cases_min_threshold)+' cases recorded', 'y':'Cases (log scale)'},
+        'x_range': (10,60),
+        'hover': ("Cases", "@Values{0,0}"),
+        'legend_loc': None,
+        'palette': pal
+    }
 
-    for cntry in countries:
-        i = countries.index(cntry)
-        src_cases_cntry = ColumnDataSource(subset_cases[subset_cases['Country'] == cntry])
-        s.line(x='DaysSince', y="Values", line_width=2, source=src_cases_cntry, color=pal[i], legend_label=cntry, name=cntry)
-        s.circle(x='DaysSince', y="Values", source=src_cases_cntry, color=pal[i], legend_label=cntry, name=cntry)
-
-    # s.line(x=np.arange(45), y=np.sqrt(np.arange(45)), legend_label='y=sqrt(x)', line_color="black", line_dash="dashed")
-    s.yaxis.axis_label = 'Cases (log scale)'
-    s.xaxis.axis_label = 'Days Since >'+str(cases_min_threshold)+' cases recorded'
-    # s.legend.location = "top_left"
-    s.legend.visible = False
-    s.title.text = "COVID-19 cumulative cases per country (log scale)"
-    s.add_tools(
-        HoverTool(tooltips=[("Name", "$name"), ("Cases", "@Values{0,0}"), ("Date", "@DateString")],
-                          formatters={"Date": "datetime"} )) #, mode='hline'))
+    cumul_cases = make_timeseries_plot(subset_cases, countries, cumul_cases_plot_settings)
 
     # Daily Change in cases bar charts
-    cases_delta = figure(x_axis_type="datetime", x_range=(start, end), plot_width=700, plot_height=400) #, tooltips=TOOLTIPS)
+    daily_cases_plot_settings = {
+        'title': "COVID-19 new daily cases per country",
+        'data': {'x':'Date', 'y':'DailyChange'},
+        'axis_type': {'x':'datetime', 'y':'linear'},
+        'axis_label': {'x':'Date', 'y':'Daily Reported Cases'},
+        'x_range': (stk.x_range),
+        'hover': ("Cases", "@DailyChange{0,0}"),
+        'legend_loc': 'top_left',
+        'palette': pal
+    }
 
-    for cntry in countries:
-        i = countries.index(cntry)
-        df = subset_cases[subset_cases['Country'] == cntry]
-        df = df.assign(foo=df.loc[:,"Date"])
-        df = df.assign(DailyChange=df.loc[:, "Values"].diff())
-        src_cases_delta = ColumnDataSource(df)
-        cases_delta.line(x='Date', y="DailyChange", line_width=2, source=src_cases_delta, color=pal[i], legend_label=cntry, name=cntry)
-        cases_delta.circle(x='Date', y="DailyChange", source=src_cases_delta, color=pal[i], legend_label=cntry, name=cntry)
+    daily_cases = make_timeseries_plot(subset_cases, countries, daily_cases_plot_settings)
 
-    # s.line(x=np.arange(45), y=np.sqrt(np.arange(45)), legend_label='y=sqrt(x)', line_color="black", line_dash="dashed")
-    cases_delta.yaxis.axis_label = 'Daily Reported Cases'
-    cases_delta.xaxis.axis_label = 'Date'
-    cases_delta.legend.location = "top_left"
-    cases_delta.legend.label_text_font_size = '6pt'
-    cases_delta.legend.glyph_height = 7
-    cases_delta.legend.label_height = 7
-    cases_delta.title.text = "COVID-19 new daily cases per country"
-    cases_delta.add_tools(
-        HoverTool(tooltips=[("Name", "$name"), ("Cases", "@DailyChange{0,0}"), ("Date", "@DateString")] )) #,
-                          # formatters={"foo": "datetime"} )) #, mode='hline'))
+    #########
+    # Deaths
+    #########
+    plot_settings = {
+        'title': "COVID-19 cumulative deaths per country",
+        'data': {'x': 'Date', 'y': 'Values'},
+        'axis_type': {'x': 'datetime', 'y': 'linear'},
+        'axis_label': {'x': 'Date', 'y': 'Cumulative Deaths'},
+        'x_range': (cumul_cases.x_range),
+        'legend_loc': None,
+        'hover': ("Deaths", "@Values{0,0}"),
+        'palette': pal
+    }
+    # Not currently used
+    p = make_timeseries_plot(subset, countries, plot_settings)
 
-    # put all the plots in a VBox
-    # show(layout([[p], [r]]))
-    show(gridplot([[s, cases_delta], [r,daily_deaths]], toolbar_location='right')) # [deaths_stack],
-    # show(layout([[s], [cases_delta], [p], [r], [daily_deaths]]))
+    cumul_deaths_plot_settings = {
+        'title': "COVID-19 cumulative deaths per country",
+        'data': {'x': 'DaysSince', 'y': 'Values'},
+        'axis_type': {'x': 'linear', 'y': 'log'},
+        'axis_label': {'x': 'Days Since >'+str(deaths_min_threshold)+' deaths recorded', 'y': 'Deaths (log scale)'},
+        'x_range': (cumul_cases.x_range),
+        'hover': ("Deaths", "@Values{0,0}"),
+        'legend_loc': None,
+        'palette': pal
+    }
+
+    cumul_deaths = make_timeseries_plot(subset, countries, cumul_deaths_plot_settings)
+
+    dailydeaths_plot_settings = {
+        'title': "COVID-19 new daily deaths per country",
+        'data': {'x':'Date', 'y':'DailyChange'},
+        'axis_type': {'x':'datetime', 'y':'linear'},
+        'axis_label': {'x':'Date', 'y':'Daily Deaths'},
+        'x_range': (stk.x_range),
+        'hover': ("Deaths", "@DailyChange{0,0}"),
+        'legend_loc': None,
+        'palette': pal
+    }
+
+    daily_deaths = make_timeseries_plot(subset, countries, dailydeaths_plot_settings)
+
+    show(gridplot([ [stk, stk_perc], [cumul_deaths,daily_deaths], [cumul_cases, daily_cases] ], toolbar_location='right')) # [deaths_stack],
 
     upload_to_ftp(out_html)
 
