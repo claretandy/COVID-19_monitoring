@@ -7,7 +7,7 @@ import numpy as np
 import bokeh
 from bokeh.layouts import layout, column, gridplot
 from bokeh.plotting import figure, output_file, show
-from bokeh.models import ColumnDataSource, HoverTool, NumeralTickFormatter
+from bokeh.models import ColumnDataSource, HoverTool, NumeralTickFormatter, DataRange1d
 import bokeh.palettes as bpals
 from bokeh.models.widgets import CheckboxGroup
 
@@ -125,8 +125,7 @@ def make_timeseries_plot(subset, countries, settings):
                x_range=settings['x_range'],
                plot_width=700, plot_height=400,
                tools="xpan,xwheel_zoom,reset,crosshair,save",
-               active_drag='xpan',
-               active_scroll='xwheel_zoom')
+               active_drag='xpan')
 
     for cntry in countries:
         i = countries.index(cntry)
@@ -160,11 +159,11 @@ def make_stacked_plot(source, countries, settings):
 
     s = figure(x_axis_type=settings['axis_type']['x'],
                y_axis_type=settings['axis_type']['y'],
-               x_range=settings['x_range'],
+               x_range=settings['range']['x'],
+               y_range=settings['range']['y'],
                plot_width=700, plot_height=400,
                tools="xpan,xwheel_zoom,reset,crosshair,save",
-               active_drag='xpan',
-               active_scroll='xwheel_zoom')
+               active_drag='xpan')
 
     s.varea_stack(countries, x=settings['data']['x'], color=pal, source=source)
     s.vline_stack(countries, x=settings['data']['x'], color=pal, source=source)
@@ -176,6 +175,7 @@ def make_stacked_plot(source, countries, settings):
     s.add_tools(
         HoverTool(tooltips=[("Name", "$name"), settings['hover']] ))
 
+    s.min_border = 0
     if settings['legend_loc']:
         s.legend.location = settings['legend_loc']  # "top_left"
         s.legend.label_text_font_size = '6pt'
@@ -214,7 +214,7 @@ def main():
         'data': {'x': 'Date', 'y': countries},
         'axis_type': {'x': 'datetime', 'y': 'linear'},
         'axis_label': {'x': 'Date', 'y': 'Daily Deaths'},
-        'x_range': (start, end),
+        'range': {'x':(start, end), 'y': DataRange1d(start=0)},
         'legend_loc': None,
         'hover': ("Deaths", "$y{0,0}"),
         'palette': pal
@@ -229,6 +229,7 @@ def main():
         'axis_type': {'x': 'datetime', 'y': 'linear'},
         'axis_label': {'x': 'Date', 'y': 'Daily Deaths'},
         'x_range': (stk.x_range), #end - dt.timedelta(days=30)
+        'range': {'x': (stk.x_range), 'y': (0,100)},
         'legend_loc': None,
         'hover': ("Deaths", "$y{0,0}"),
         'palette': pal
@@ -260,7 +261,7 @@ def main():
         'axis_label': {'x':'Date', 'y':'Daily Reported Cases'},
         'x_range': (stk.x_range),
         'hover': ("Cases", "@DailyChange{0,0}"),
-        'legend_loc': 'top_left',
+        'legend_loc': None,
         'palette': pal
     }
 
@@ -302,7 +303,7 @@ def main():
         'axis_label': {'x':'Date', 'y':'Daily Deaths'},
         'x_range': (stk.x_range),
         'hover': ("Deaths", "@DailyChange{0,0}"),
-        'legend_loc': None,
+        'legend_loc': 'top_left',
         'palette': pal
     }
 
